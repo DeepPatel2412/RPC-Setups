@@ -10,6 +10,9 @@ YELLOW='\033[33m'
 CYAN='\033[36m'
 GRAY='\033[90m'
 
+# ---- Helper for error exit ----
+fail() { echo -e "${RED}ERROR:${NC} $1"; exit 1; }
+
 # ---- Pre-flight Check ----
 echo -e "${CYAN}========================================"
 echo -e "     ETHEREUM SEPOLIA NODE INSTALLER"
@@ -45,30 +48,36 @@ fi
 
 echo -e "${CYAN}----------------------------------------${NC}"
 
-# ---- 0. Check Docker and Compose ----
-echo -e "${CYAN}Checking for Docker and Docker Compose...${NC}"
+# ---- 0. Check Prerequisites ----
+echo -e "${CYAN}Checking for prerequisites...${NC}"
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo -e "${YELLOW}Docker not found. Installing prerequisites...${NC}"
-  curl -fsSL https://raw.githubusercontent.com/DeepPatel2412/Sepolia-RPC-Setup/main/install-prerequisites.sh | bash
+for cmd in docker curl sudo openssl; do
+  command -v $cmd >/dev/null 2>&1 || fail "$cmd is not installed. Please install it and rerun."
+done
+
+if ! (docker info >/dev/null 2>&1); then
+  fail "Docker is not running. Please start Docker and rerun."
 fi
 
-if ! sudo docker compose version >/dev/null 2>&1; then
-  echo -e "${YELLOW}Docker Compose plugin not found. Installing prerequisites...${NC}"
-  curl -fsSL https://raw.githubusercontent.com/DeepPatel2412/Sepolia-RPC-Setup/main/install-prerequisites.sh | bash
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE_CMD="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD="docker-compose"
+else
+  fail "Docker Compose is not installed. Please install it and rerun."
 fi
 
-echo -e "${GREEN}Docker and Compose are installed. Proceeding with Sepolia node setup...${NC}"
+echo -e "${GREEN}All prerequisites found.${NC}"
 
 # ---- 1. Create Directory Structure ----
 echo -e "${CYAN}Creating directory structure...${NC}"
 mkdir -p Ethereum/Execution Ethereum/Consensus
-echo -e "${GREEN}Directory structure ready.${NC}"
+cd Ethereum
 
 # ---- 2. Generate JWT Secret ----
 echo -e "${CYAN}Generating JWT secret...${NC}"
-if [ ! -f Ethereum/jwt.hex ]; then
-  openssl rand -hex 32 | tr -d "\n" > Ethereum/jwt.hex
+if [ ! -f jwt.hex ]; then
+  openssl rand -hex 32 | tr -d "\n" > jwt.hex || fail "Failed to create jwt.hex"
   echo -e "${GREEN}JWT secret created.${NC}"
 else
   echo -e "${YELLOW}JWT secret already exists, skipping.${NC}"
@@ -76,8 +85,8 @@ fi
 
 # ---- 3. Create Default Whitelist File ----
 echo -e "${CYAN}Creating whitelist file...${NC}"
-if [ ! -f Ethereum/whitelist.lst ]; then
-  echo "127.0.0.1/32" > Ethereum/whitelist.lst
+if [ ! -f whitelist.lst ]; then
+  echo "127.0.0.1/32" > whitelist.lst || fail "Failed to create whitelist.lst"
   echo -e "${GREEN}Whitelist file created.${NC}"
 else
   echo -e "${YELLOW}Whitelist file already exists, skipping.${NC}"
@@ -85,7 +94,7 @@ fi
 
 # ---- 4. Write Docker Compose File ----
 echo -e "${CYAN}Writing Docker Compose file...${NC}"
-cat > Ethereum/docker-compose.yml <<EOF
+cat > docker-compose.yml <<EOF
 services:
   erigon:
     image: erigontech/erigon:latest
@@ -121,6 +130,7 @@ services:
       - ./Consensus:/data
       - ./jwt.hex:/jwt.hex
     command:
+      - lighthouse
       - beacon_node
       - --network=sepolia
       - --execution-endpoint=http://erigon:8551
@@ -163,7 +173,7 @@ echo -e "${GREEN}Docker Compose file written.${NC}"
 
 # ---- 5. Write HAProxy Config ----
 echo -e "${CYAN}Writing HAProxy config...${NC}"
-cat > Ethereum/haproxy.cfg <<EOF
+cat > haproxy.cfg <<EOF
 global
     maxconn 100000
     nbthread 8
@@ -196,13 +206,20 @@ backend lighthouse_backend
 EOF
 echo -e "${GREEN}HAProxy config written.${NC}"
 
-# ---- 6. Start Docker Compose Stack ----
+# ---- 6. Validate Compose File ----
+echo -e "${CYAN}Validating docker-compose.yml...${NC}"
+$COMPOSE_CMD config >/dev/null 2>&1 || fail "docker-compose.yml is invalid. Please check the file."
+
+# ---- 7. Pull Images (with error check) ----
+echo -e "${CYAN}Pulling Docker images (this may take a while)...${NC}"
+$COMPOSE_CMD pull || fail "Failed to pull images. Check your internet connection or Docker Hub access."
+
+# ---- 8. Start Docker Compose Stack ----
 echo -e "${CYAN}Starting Docker Compose stack...${NC}"
-cd Ethereum
-sudo docker compose up -d
+$COMPOSE_CMD up -d || fail "Failed to start Docker Compose stack."
 echo -e "${GREEN}Docker Compose stack started.${NC}"
 
-# ---- 7. Set Up UFW Firewall (Best Practice) ----
+# ---- 9. Set Up UFW Firewall (Best Practice) ----
 echo -e "${CYAN}Configuring UFW firewall rules...${NC}"
 if command -v ufw >/dev/null 2>&1; then
   sudo ufw allow 22/tcp
@@ -223,7 +240,7 @@ else
   echo -e "${YELLOW}UFW not installed. Skipping firewall setup.${NC}"
 fi
 
-# ---- 8. Dozzle Monitoring Already Included ----
+# ---- 10. Dozzle Monitoring Already Included ----
 
 # ---- Get Server IPs ----
 LOCAL_IP="127.0.0.1"
@@ -264,7 +281,7 @@ echo -e "${CYAN}----------------------------------------${NC}"
 echo -e "${BOLD}Firewall:${NC} allows SSH/HTTP/HTTPS only"
 echo -e "${CYAN}========================================${NC}"
 
-# ---- 9. Offer to Add Whitelist IP ----
+# ---- 11. Offer to Add Whitelist IP ----
 echo ""
 read -p "Add IP to whitelist for remote access? [Y/n]: " ADD_WL
 ADD_WL=${ADD_WL:-Y}
