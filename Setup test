@@ -86,10 +86,9 @@ fi
 # ---- 4. Write Docker Compose File ----
 echo -e "${CYAN}Writing Docker Compose file...${NC}"
 cat > Ethereum/docker-compose.yml <<EOF
-version: "3.8"
 services:
   erigon:
-    image: thorax/erigon:latest
+    image: erigontech/erigon:latest
     container_name: erigon
     restart: unless-stopped
     volumes:
@@ -276,10 +275,10 @@ if [[ "$ADD_WL" =~ ^[Yy]$ ]]; then
   WL_IP=${WL_IP:-${REMOTE_IP}/32}
 
   if [[ "$WL_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
-    if grep -qxF "$WL_IP" Ethereum/whitelist.lst; then
+    if grep -qxF "$WL_IP" whitelist.lst; then
       echo -e "${YELLOW}IP $WL_IP is already whitelisted.${NC}"
     else
-      echo "$WL_IP" >> Ethereum/whitelist.lst
+      echo "$WL_IP" >> whitelist.lst
       echo -e "${GREEN}Added $WL_IP to whitelist.${NC}"
       echo "Restarting HAProxy container to apply changes..."
       sudo docker restart haproxy
