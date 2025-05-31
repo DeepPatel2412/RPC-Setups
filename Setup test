@@ -98,10 +98,12 @@ services:
       - --authrpc.jwtsecret=/jwt.hex
       - --authrpc.addr=0.0.0.0
       - --authrpc.port=8551
+      - --authrpc.vhosts=*
       - --http
       - --http.api=eth,erigon,web3,net,debug
       - --prune.mode=full
-      - --maxpeers=100
+      - --maxpeers=200
+      - --verbosity=3
     volumes:
       - ./Execution:/home/erigon/.local/share/erigon
       - ./jwt.hex:/jwt.hex
@@ -127,6 +129,8 @@ services:
       - --sepolia
       - --checkpoint-sync-url=https://checkpoint-sync.sepolia.ethpandaops.io/
       - --accept-terms-of-use
+      - --p2p-max-peers=200
+      - --verbosity=info
     volumes:
       - ./Consensus:/data
       - ./jwt.hex:/jwt.hex
