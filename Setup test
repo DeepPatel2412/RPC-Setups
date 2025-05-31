@@ -7,8 +7,10 @@ BOLD='\033[1m'
 GREEN='\033[32m'
 RED='\033[31m'
 YELLOW='\033[33m'
-CYAN='\033[36m]'
-GRAY='\033[90m'
+CYAN='\033[36m'
+LINK='\033[36m'
+
+fail() { echo -e "${RED}ERROR:${NC} $1"; exit 1; }
 
 # ---- Pre-flight Check ----
 echo -e "${CYAN}========================================"
@@ -45,55 +47,52 @@ fi
 
 echo -e "${CYAN}----------------------------------------${NC}"
 
-# ---- 0. Check Docker and Compose ----
-echo -e "${CYAN}Checking for Docker and Docker Compose...${NC}"
+# ---- 0. Check Prerequisites ----
+echo -e "${CYAN}Checking for prerequisites...${NC}"
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo -e "${YELLOW}Docker not found. Installing prerequisites...${NC}"
-  curl -fsSL https://raw.githubusercontent.com/DeepPatel2412/Sepolia-RPC-Setup/main/install-prerequisites.sh | bash
+for cmd in docker curl sudo openssl; do
+  command -v $cmd >/dev/null 2>&1 || fail "$cmd is not installed. Please install it and rerun."
+done
+
+if ! (docker info >/dev/null 2>&1); then
+  fail "Docker is not running. Please start Docker and rerun."
 fi
 
-if ! sudo docker compose version >/dev/null 2>&1; then
-  echo -e "${YELLOW}Docker Compose plugin not found. Installing prerequisites...${NC}"
-  curl -fsSL https://raw.githubusercontent.com/DeepPatel2412/Sepolia-RPC-Setup/main/install-prerequisites.sh | bash
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE_CMD="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD="docker-compose"
+else
+  fail "Docker Compose is not installed. Please install it and rerun."
 fi
 
-echo -e "${GREEN}Docker and Compose are installed. Proceeding with Sepolia node setup...${NC}"
+echo -e "${GREEN}All prerequisites found.${NC}"
 
 # ---- 1. Create Directory Structure ----
 echo -e "${CYAN}Creating directory structure...${NC}"
-mkdir -p Ethereum/Execution Ethereum/Consensus
-echo -e "${GREEN}Directory structure ready.${NC}"
+mkdir -p Ethereum/{Execution,Consensus}
+cd Ethereum
 
-# ---- 2. Generate JWT Secret ----
+# ---- 2. Generate Fresh JWT Secret ----
 echo -e "${CYAN}Generating JWT secret...${NC}"
-if [ ! -f Ethereum/jwt.hex ]; then
-  openssl rand -hex 32 | tr -d "\n" > Ethereum/jwt.hex
-  echo -e "${GREEN}JWT secret created.${NC}"
-else
-  echo -e "${YELLOW}JWT secret already exists, skipping.${NC}"
-fi
+openssl rand -hex 32 | tr -d "\n" > jwt.hex || fail "Failed to create jwt.hex"
+chmod 644 jwt.hex
+echo -e "${GREEN}JWT secret created.${NC}"
 
-# ---- 3. Create Default Whitelist File ----
+# ---- 3. Create Whitelist File ----
 echo -e "${CYAN}Creating whitelist file...${NC}"
-if [ ! -f Ethereum/whitelist.lst ]; then
-  echo "127.0.0.1/32" > Ethereum/whitelist.lst
-  echo -e "${GREEN}Whitelist file created.${NC}"
-else
-  echo -e "${YELLOW}Whitelist file already exists, skipping.${NC}"
-fi
+echo "127.0.0.1/32" > whitelist.lst || fail "Failed to create whitelist.lst"
+echo -e "${GREEN}Whitelist file created.${NC}"
 
 # ---- 4. Write Docker Compose File ----
 echo -e "${CYAN}Writing Docker Compose file...${NC}"
-cat > Ethereum/docker-compose.yml <<EOF
+cat > docker-compose.yml <<EOF
+version: "3.8"
 services:
   erigon:
     image: erigontech/erigon:latest
     container_name: erigon
     restart: unless-stopped
-    volumes:
-      - ./Execution:/home/erigon/.local/share/erigon
-      - ./jwt.hex:/jwt.hex
     command:
       - --chain=sepolia
       - --externalcl
@@ -106,6 +105,9 @@ services:
       - --prune.mode=full
       - --maxpeers=200
       - --verbosity=3
+    volumes:
+      - ./Execution:/home/erigon/.local/share/erigon
+      - ./jwt.hex:/jwt.hex
     ports:
       - 8545:8545
       - 8551:8551
@@ -118,25 +120,26 @@ services:
     restart: unless-stopped
     depends_on:
       - erigon
-    volumes:
-      - ./Consensus:/data
-      - ./jwt.hex:/jwt.hex
     command:
-      - --sepolia
       - --datadir=/data
-      - --execution-endpoint=http://erigon:8551
-      - --jwt-secret=/jwt.hex
       - --rpc-host=0.0.0.0
       - --grpc-gateway-host=0.0.0.0
-      - --blob-storage-layout=by-epoch
-      - --checkpoint-sync-url=https://checkpoint-sync.sepolia.ethpandaops.io
-      - --genesis-beacon-api-url=https://checkpoint-sync.sepolia.ethpandaops.io
+      - --monitoring-host=0.0.0.0
+      - --execution-endpoint=http://erigon:8551
+      - --jwt-secret=/jwt.hex
+      - --sepolia
+      - --checkpoint-sync-url=https://checkpoint-sync.sepolia.ethpandaops.io/
       - --accept-terms-of-use
       - --p2p-max-peers=200
       - --verbosity=info
+    volumes:
+      - ./Consensus:/data
+      - ./jwt.hex:/jwt.hex
     ports:
-      - 3500:3500
-      - 4000:4000
+      - 4000:4000/tcp
+      - 4000:4000/udp
+      - 3500:3500/tcp
+      - 8080:8080/tcp
 
   haproxy:
     image: haproxy:2.8
@@ -151,148 +154,107 @@ services:
     ports:
       - 80:80
       - 443:443
+
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: dozzle
+    ports:
+      - 9999:8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
 EOF
 echo -e "${GREEN}Docker Compose file written.${NC}"
 
 # ---- 5. Write HAProxy Config ----
 echo -e "${CYAN}Writing HAProxy config...${NC}"
-cat > Ethereum/haproxy.cfg <<EOF
+cat > haproxy.cfg <<EOF
 global
-    maxconn 50000
-    nbthread 4
-    cpu-map 1-4 0-3
+    maxconn 200000
+    nbthread 16
+    cpu-map 1-16 0-15
+    tune.bufsize 32768
+    tune.ssl.default-dh-param 2048
 
 defaults
-    timeout connect 5s
-    timeout client 50s
-    timeout server 50s
+    timeout connect 2s
+    timeout client 30s
+    timeout server 30s
+    option http-server-close
+    option forwardfor
+    maxconn 200000
 
 frontend http-in
     bind *:80
     bind *:443
     mode http
+    option httplog
     acl valid_ip src -f /etc/haproxy/whitelist.lst
     http-request deny if !valid_ip
 
     use_backend erigon_backend if { path_beg /erigon/ }
     use_backend prysm_backend if { path_beg /prysm/ }
+    default_backend erigon_backend
 
 backend erigon_backend
     mode http
-    balance roundrobin
-    server erigon1 erigon:8545 maxconn 10000 check inter 5s
+    balance leastconn
+    option http-server-close
+    option forwardfor
+    server erigon1 erigon:8545 maxconn 100000 check inter 2s
 
 backend prysm_backend
     mode http
     balance leastconn
-    server prysm1 prysm:3500 maxconn 5000 check inter 5s
+    option http-server-close
+    option forwardfor
+    server prysm1 prysm:8080 maxconn 100000 check inter 2s
 EOF
 echo -e "${GREEN}HAProxy config written.${NC}"
 
-# ---- 6. Start Docker Compose Stack ----
-echo -e "${CYAN}Starting Docker Compose stack...${NC}"
-cd Ethereum
-sudo docker compose up -d
-echo -e "${GREEN}Docker Compose stack started.${NC}"
+# ---- 6. Fix Permissions ----
+echo -e "${CYAN}Fixing permissions...${NC}"
+sudo chown -R 1000:1000 Execution Consensus
+echo -e "${GREEN}Permissions fixed.${NC}"
 
-# ---- 7. Set Up UFW Firewall (Best Practice) ----
-echo -e "${CYAN}Configuring UFW firewall rules...${NC}"
+# ---- 7. Start Services ----
+echo -e "${CYAN}Starting Docker stack...${NC}"
+$COMPOSE_CMD up -d
+echo -e "${GREEN}Docker stack started.${NC}"
+
+# ---- 8. Configure Firewall ----
+echo -e "${CYAN}Configuring firewall...${NC}"
 if command -v ufw >/dev/null 2>&1; then
   sudo ufw allow 22/tcp
   sudo ufw allow 80/tcp
   sudo ufw allow 443/tcp
-  sudo ufw allow 9999/tcp
-  sudo ufw allow 8545/tcp
-  sudo ufw allow 8551/tcp
   sudo ufw allow 30303/tcp
   sudo ufw allow 30303/udp
-  sudo ufw allow 3500/tcp
   sudo ufw allow 4000/tcp
   sudo ufw allow 4000/udp
+  sudo ufw allow 3500/tcp
+  sudo ufw allow 8080/tcp
+  sudo ufw allow 8545/tcp
+  sudo ufw allow 8551/tcp
+  sudo ufw allow 9999/tcp
   sudo ufw --force enable
-  sudo ufw status verbose
-  echo -e "${GREEN}UFW firewall configured.${NC}"
+  echo -e "${GREEN}Firewall configured.${NC}"
 else
-  echo -e "${YELLOW}UFW not installed. Skipping firewall setup.${NC}"
+  echo -e "${YELLOW}UFW not found. Firewall setup skipped.${NC}"
 fi
 
-# ---- 8. Install Dozzle Monitoring ----
-echo -e "${CYAN}Installing Dozzle monitoring...${NC}"
-cd ..
-if ! sudo docker ps -a --format '{{.Names}}' | grep -q "^dozzle$"; then
-  sudo docker run -d \
-    -v /var/run/docker.sock:/var/run/docker.sock \
-    -p 9999:8080 \
-    --name dozzle \
-    amir20/dozzle:latest
-  echo -e "${GREEN}Dozzle installed.${NC}"
-else
-  echo -e "${YELLOW}Dozzle container already exists, skipping.${NC}"
-fi
-
-# ---- Get Server IPs ----
-LOCAL_IP="127.0.0.1"
-SERVER_IP=$(hostname -I | awk '{print $1}')
-PUBLIC_IP=$(curl -4 -s ifconfig.me || echo $SERVER_IP)
-REMOTE_IP=$PUBLIC_IP
-
-# ---- Final Output ----
+# ---- 9. Final Output ----
+PUBLIC_IP=$(curl -4 -s ifconfig.me)
 echo -e "${CYAN}========================================"
 echo -e "         ETHEREUM SEPOLIA NODE STATUS"
 echo -e "========================================${NC}"
-
-echo -e "${BOLD}Local (Aztec in same VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${YELLOW}http://127.0.0.1/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${YELLOW}http://127.0.0.1/prysm/${NC}"
-
-echo -e "\n${BOLD}Remote (Aztec in other VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${YELLOW}http://${REMOTE_IP}/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${YELLOW}http://${REMOTE_IP}/prysm/${NC}"
-
-echo -e "\n${BOLD}Monitoring${NC}"
-echo -e "· Dozzle         : ${GREEN}✔${NC} ${YELLOW}http://${REMOTE_IP}:9999/${NC}"
-
-echo -e "\n${BOLD}Whitelist file${NC}"
-echo -e "· ${YELLOW}Ethereum/whitelist.lst${NC}"
-
-echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${BOLD}Example L2/L3 usage:${NC}"
-echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${GRAY}--l1-rpc-urls http://${REMOTE_IP}/erigon/"
-echo -e "--l1-consensus-host-urls http://${REMOTE_IP}/prysm/${NC}"
-echo -e "${CYAN}----------------------------------------${NC}"
-
-echo -e "${BOLD}To whitelist more IPs:${NC} edit ${YELLOW}Ethereum/whitelist.lst${NC} then:"
-echo -e "  sudo docker restart haproxy"
-
-echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${BOLD}Firewall:${NC} allows SSH/HTTP/HTTPS only"
+echo -e "${BOLD}Local Access:${NC}"
+echo -e "· Erigon RPC:   ${GREEN}http://127.0.0.1/erigon/${NC}"
+echo -e "· Beacon RPC:   ${GREEN}http://127.0.0.1/prysm/${NC}"
+echo -e "\n${BOLD}Remote Access:${NC}"
+echo -e "· Erigon RPC:   ${GREEN}http://${PUBLIC_IP}/erigon/${NC}"
+echo -e "· Beacon RPC:   ${GREEN}http://${PUBLIC_IP}/prysm/${NC}"
+echo -e "· Dozzle:       ${GREEN}http://${PUBLIC_IP}:9999/${NC}"
 echo -e "${CYAN}========================================${NC}"
 
-# ---- 9. Offer to Add Whitelist IP ----
-echo ""
-read -p "Add IP to whitelist for remote access? [Y/n]: " ADD_WL
-ADD_WL=${ADD_WL:-Y}
-
-if [[ "$ADD_WL" =~ ^[Yy]$ ]]; then
-  echo "ℹ️  Your remote IP appears to be: ${REMOTE_IP}"
-  read -p "Enter IP/CIDR to whitelist (default ${REMOTE_IP}/32): " WL_IP
-  WL_IP=${WL_IP:-${REMOTE_IP}/32}
-
-  if [[ "$WL_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
-    if grep -qxF "$WL_IP" Ethereum/whitelist.lst; then
-      echo -e "${YELLOW}IP $WL_IP is already whitelisted.${NC}"
-    else
-      echo "$WL_IP" >> Ethereum/whitelist.lst
-      echo -e "${GREEN}Added $WL_IP to whitelist.${NC}"
-      echo "Restarting HAProxy container to apply changes..."
-      sudo docker restart haproxy
-      echo -e "${GREEN}HAProxy restarted.${NC}"
-    fi
-  else
-    echo -e "${RED}Invalid IP format. Please edit Ethereum/whitelist.lst manually.${NC}"
-  fi
-fi
-
-echo ""
-echo -e "${GREEN}Setup complete. Enjoy your Sepolia node!${NC}"
+echo -e "\n${GREEN}Setup complete. Node is syncing!${NC}"
