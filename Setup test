@@ -70,7 +70,7 @@ echo -e "${GREEN}All prerequisites found.${NC}"
 
 # ---- 1. Create Directory Structure ----
 echo -e "${CYAN}Creating directory structure...${NC}"
-mkdir -p Ethereum/{Execution,Consensus}
+mkdir -p Ethereum/Execution Ethereum/Consensus
 cd Ethereum
 
 # ---- 2. Generate Fresh JWT Secret ----
