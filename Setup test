@@ -73,14 +73,11 @@ echo -e "${CYAN}Creating directory structure...${NC}"
 mkdir -p Ethereum/Execution Ethereum/Consensus
 echo -e "${GREEN}Directory structure ready.${NC}"
 
-# ---- 2. Generate JWT Secret ----
-echo -e "${CYAN}Generating JWT secret...${NC}"
-if [ ! -f Ethereum/jwt.hex ]; then
-  openssl rand -hex 32 | tr -d "\n" > Ethereum/jwt.hex
-  echo -e "${GREEN}JWT secret created.${NC}"
-else
-  echo -e "${YELLOW}JWT secret already exists, skipping.${NC}"
-fi
+# ---- 2. Generate JWT Secret (always fresh) ----
+echo -e "${CYAN}Generating fresh JWT secret...${NC}"
+openssl rand -hex 32 | tr -d "\n" > Ethereum/jwt.hex || fail "Failed to create jwt.hex"
+chmod 644 Ethereum/jwt.hex
+echo -e "${GREEN}JWT secret created and permissions set.${NC}"
 
 # ---- 3. Create Default Whitelist File ----
 echo -e "${CYAN}Creating whitelist file...${NC}"
@@ -106,7 +103,7 @@ services:
       - --network=sepolia
       - --execution-endpoint=http://erigon:8551
       - --execution-jwt=/jwt.hex
-      - --checkpoint-sync-url=https://beaconstate-sepolia.chainsafe.io
+      - --checkpoint-sync-url=https://checkpoint-sync.sepolia.ethpandaops.io/
       - --http
       - --http-port=5052
       - --target-peers=100
