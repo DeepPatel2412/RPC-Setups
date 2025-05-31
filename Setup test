@@ -106,7 +106,7 @@ services:
       - --network=sepolia
       - --execution-endpoint=http://erigon:8551
       - --execution-jwt=/jwt.hex
-      - --checkpoint-sync-url=https://sepolia.checkpoint.sigp.io
+      - --checkpoint-sync-url=http://sepolia.checkpoint.sigp.io/    # Use HTTP, not HTTPS
       - --http
       - --http-port=5052
       - --target-peers=100
