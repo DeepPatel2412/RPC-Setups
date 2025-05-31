@@ -7,14 +7,48 @@ BOLD='\033[1m'
 GREEN='\033[32m'
 RED='\033[31m'
 YELLOW='\033[33m'
-CYAN='\033[36m'
-LINK='\033[36m'
+CYAN='\033[36m]'
+GRAY='\033[90m'
 
 fail() { echo -e "${RED}ERROR:${NC} $1"; exit 1; }
 
+# ---- Pre-flight Check ----
 echo -e "${CYAN}========================================"
 echo -e "     ETHEREUM SEPOLIA NODE INSTALLER"
 echo -e "========================================${NC}"
+echo -e "${BOLD}Recommended System Specifications:${NC}"
+echo -e "· Storage: 750GB-1TB SSD"
+echo -e "· CPU: 4+ cores"
+echo -e "· RAM: 16GB+"
+echo -e "${CYAN}----------------------------------------${NC}"
+echo "Checking your system resources..."
+
+AVAILABLE_SPACE=$(df -BG --output=avail / | tail -1 | tr -d ' ')
+CPU_CORES=$(nproc)
+TOTAL_RAM=$(free -g | awk '/Mem:/ {print $2}')
+
+echo -e "\n${BOLD}Your System Resources:${NC}"
+echo -e "· Available Storage: ${AVAILABLE_SPACE}B"
+echo -e "· CPU Cores: ${CPU_CORES}"
+echo -e "· Total RAM: ${TOTAL_RAM}GB"
+
+WARNING=""
+[[ ${AVAILABLE_SPACE%G} -lt 750 ]] && WARNING+="· ${RED}Low storage space detected${NC}\n"
+[[ ${CPU_CORES} -lt 4 ]] && WARNING+="· ${RED}Insufficient CPU cores detected${NC}\n"
+[[ ${TOTAL_RAM} -lt 16 ]] && WARNING+="· ${RED}Insufficient RAM detected${NC}\n"
+
+if [[ -n "$WARNING" ]]; then
+    echo -e "\n${RED}Potential Issues Found:${NC}"
+    printf "$WARNING"
+    read -p "Continue installation despite warnings? [y/N]: " CONTINUE
+    CONTINUE=${CONTINUE:-N}
+    [[ "$CONTINUE" =~ [yY] ]] || exit 1
+fi
+
+echo -e "${CYAN}----------------------------------------${NC}"
+
+# ---- 0. Check Docker and Compose ----
+echo -e "${CYAN}Checking for Docker and Docker Compose...${NC}"
 
 for cmd in docker curl sudo openssl; do
   command -v $cmd >/dev/null 2>&1 || fail "$cmd is not installed. Please install it and rerun."
@@ -32,18 +66,34 @@ else
   fail "Docker Compose is not installed. Please install it and rerun."
 fi
 
+echo -e "${GREEN}Docker and Compose are installed. Proceeding with Sepolia node setup...${NC}"
+
+# ---- 1. Create Directory Structure ----
+echo -e "${CYAN}Creating directory structure...${NC}"
 mkdir -p Ethereum/Execution Ethereum/Consensus
-cd Ethereum
+echo -e "${GREEN}Directory structure ready.${NC}"
 
-if [ ! -f jwt.hex ]; then
-  openssl rand -hex 32 | tr -d "\n" > jwt.hex || fail "Failed to create jwt.hex"
+# ---- 2. Generate JWT Secret ----
+echo -e "${CYAN}Generating JWT secret...${NC}"
+if [ ! -f Ethereum/jwt.hex ]; then
+  openssl rand -hex 32 | tr -d "\n" > Ethereum/jwt.hex
+  echo -e "${GREEN}JWT secret created.${NC}"
+else
+  echo -e "${YELLOW}JWT secret already exists, skipping.${NC}"
 fi
 
-if [ ! -f whitelist.lst ]; then
-  echo "127.0.0.1/32" > whitelist.lst || fail "Failed to create whitelist.lst"
+# ---- 3. Create Default Whitelist File ----
+echo -e "${CYAN}Creating whitelist file...${NC}"
+if [ ! -f Ethereum/whitelist.lst ]; then
+  echo "127.0.0.1/32" > Ethereum/whitelist.lst
+  echo -e "${GREEN}Whitelist file created.${NC}"
+else
+  echo -e "${YELLOW}Whitelist file already exists, skipping.${NC}"
 fi
 
-cat > docker-compose.yml <<EOF
+# ---- 4. Write Docker Compose File ----
+echo -e "${CYAN}Writing Docker Compose file...${NC}"
+cat > Ethereum/docker-compose.yml <<EOF
 version: "3.8"
 services:
   erigon:
@@ -84,8 +134,6 @@ services:
       - --checkpoint-sync-url=https://sepolia.checkpoint.sigp.io
       - --http
       - --http-port=5052
-      - --enable-blobs
-      - --enable-blob-sidecars
       - --target-peers=100
     volumes:
       - ./Consensus:/data
@@ -118,8 +166,11 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 EOF
+echo -e "${GREEN}Docker Compose file written.${NC}"
 
-cat > haproxy.cfg <<EOF
+# ---- 5. Write HAProxy Config ----
+echo -e "${CYAN}Writing HAProxy config...${NC}"
+cat > Ethereum/haproxy.cfg <<EOF
 global
     maxconn 200000
     nbthread 16
@@ -161,11 +212,22 @@ backend lighthouse_backend
     option forwardfor
     server lighthouse1 lighthouse:5052 maxconn 100000 check inter 2s
 EOF
+echo -e "${GREEN}HAProxy config written.${NC}"
 
-$COMPOSE_CMD config >/dev/null 2>&1 || fail "docker-compose.yml is invalid. Please check the file."
-$COMPOSE_CMD pull || fail "Failed to pull images. Check your internet connection or Docker Hub access."
-$COMPOSE_CMD up -d || fail "Failed to start Docker Compose stack."
+# ---- 6. Fix Permissions ----
+echo -e "${CYAN}Fixing permissions for Erigon and Lighthouse data directories...${NC}"
+sudo chown -R 1000:1000 Ethereum/Execution
+sudo chown -R 1000:1000 Ethereum/Consensus
+echo -e "${GREEN}Permissions fixed.${NC}"
 
+# ---- 7. Start Docker Compose Stack ----
+echo -e "${CYAN}Starting Docker Compose stack...${NC}"
+cd Ethereum
+sudo $COMPOSE_CMD up -d
+echo -e "${GREEN}Docker Compose stack started.${NC}"
+
+# ---- 8. Set Up UFW Firewall (Best Practice) ----
+echo -e "${CYAN}Configuring UFW firewall rules...${NC}"
 if command -v ufw >/dev/null 2>&1; then
   sudo ufw allow 22/tcp
   sudo ufw allow 80/tcp
@@ -180,27 +242,32 @@ if command -v ufw >/dev/null 2>&1; then
   sudo ufw allow 9999/tcp
   sudo ufw --force enable
   sudo ufw status verbose
+  echo -e "${GREEN}UFW firewall configured.${NC}"
+else
+  echo -e "${YELLOW}UFW not installed. Skipping firewall setup.${NC}"
 fi
 
+# ---- Get Server IPs ----
 LOCAL_IP="127.0.0.1"
 SERVER_IP=$(hostname -I | awk '{print $1}')
 PUBLIC_IP=$(curl -4 -s ifconfig.me || echo $SERVER_IP)
 REMOTE_IP=$PUBLIC_IP
 
+# ---- Final Output ----
 echo -e "${CYAN}========================================"
 echo -e "         ETHEREUM SEPOLIA NODE STATUS"
 echo -e "========================================${NC}"
 
 echo -e "${BOLD}Local (Aztec in same VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${LINK}http://127.0.0.1/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${LINK}http://127.0.0.1/lighthouse/${NC}"
+echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${CYAN}http://127.0.0.1/erigon/${NC}"
+echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${CYAN}http://127.0.0.1/lighthouse/${NC}"
 
 echo -e "\n${BOLD}Remote (Aztec in other VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}/lighthouse/${NC}"
+echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${CYAN}http://${REMOTE_IP}/erigon/${NC}"
+echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${CYAN}http://${REMOTE_IP}/lighthouse/${NC}"
 
 echo -e "\n${BOLD}Monitoring${NC}"
-echo -e "· Dozzle         : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}:9999/${NC}"
+echo -e "· Dozzle         : ${GREEN}✔${NC} ${CYAN}http://${REMOTE_IP}:9999/${NC}"
 
 echo -e "\n${BOLD}Whitelist file${NC}"
 echo -e "· ${YELLOW}Ethereum/whitelist.lst${NC}"
@@ -208,7 +275,7 @@ echo -e "· ${YELLOW}Ethereum/whitelist.lst${NC}"
 echo -e "${CYAN}----------------------------------------${NC}"
 echo -e "${BOLD}Example L2/L3 usage:${NC}"
 echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${LINK}--l1-rpc-urls http://${REMOTE_IP}/erigon/"
+echo -e "${CYAN}--l1-rpc-urls http://${REMOTE_IP}/erigon/"
 echo -e "--l1-consensus-host-urls http://${REMOTE_IP}/lighthouse/${NC}"
 echo -e "${CYAN}----------------------------------------${NC}"
 
@@ -219,7 +286,7 @@ echo -e "${CYAN}----------------------------------------${NC}"
 echo -e "${BOLD}Firewall:${NC} allows SSH/HTTP/HTTPS only"
 echo -e "${CYAN}========================================${NC}"
 
-# ---- 11. Offer to Add Whitelist IP ----
+# ---- 9. Offer to Add Whitelist IP ----
 echo ""
 read -p "Add IP to whitelist for remote access? [Y/n]: " ADD_WL
 ADD_WL=${ADD_WL:-Y}
