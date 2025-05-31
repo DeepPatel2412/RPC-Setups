@@ -70,7 +70,7 @@ echo -e "${GREEN}All prerequisites found.${NC}"
 
 # ---- 1. Create Directory Structure ----
 echo -e "${CYAN}Creating directory structure...${NC}"
-mkdir -p Ethereum/Execution Ethereum/Consensus
+mkdir -p Ethereum/{Execution,Consensus}
 cd Ethereum
 
 # ---- 2. Generate Fresh JWT Secret ----
@@ -111,29 +111,30 @@ services:
       - 30303:30303/tcp
       - 30303:30303/udp
 
-  lighthouse:
-    image: sigp/lighthouse:latest
-    container_name: lighthouse
+  prysm:
+    image: gcr.io/prysmaticlabs/prysm/beacon-chain:latest
+    container_name: prysm
     restart: unless-stopped
     depends_on:
       - erigon
     command:
-      - lighthouse
-      - beacon_node
-      - --network=sepolia
+      - --datadir=/data
+      - --rpc-host=0.0.0.0
+      - --grpc-gateway-host=0.0.0.0
+      - --monitoring-host=0.0.0.0
       - --execution-endpoint=http://erigon:8551
-      - --execution-jwt=/jwt.hex
+      - --jwt-secret=/jwt.hex
+      - --sepolia
       - --checkpoint-sync-url=https://checkpoint-sync.sepolia.ethpandaops.io/
-      - --http
-      - --http-port=5052
-      - --target-peers=100
+      - --accept-terms-of-use
     volumes:
       - ./Consensus:/data
       - ./jwt.hex:/jwt.hex
     ports:
-      - 9000:9000/tcp
-      - 9000:9000/udp
-      - 5052:5052
+      - 4000:4000/tcp
+      - 4000:4000/udp
+      - 3500:3500/tcp
+      - 8080:8080/tcp
 
   haproxy:
     image: haproxy:2.8
@@ -141,7 +142,7 @@ services:
     restart: unless-stopped
     depends_on:
       - erigon
-      - lighthouse
+      - prysm
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg
       - ./whitelist.lst:/etc/haproxy/whitelist.lst
@@ -187,7 +188,7 @@ frontend http-in
     http-request deny if !valid_ip
 
     use_backend erigon_backend if { path_beg /erigon/ }
-    use_backend lighthouse_backend if { path_beg /lighthouse/ }
+    use_backend prysm_backend if { path_beg /prysm/ }
     default_backend erigon_backend
 
 backend erigon_backend
@@ -197,12 +198,12 @@ backend erigon_backend
     option forwardfor
     server erigon1 erigon:8545 maxconn 100000 check inter 2s
 
-backend lighthouse_backend
+backend prysm_backend
     mode http
     balance leastconn
     option http-server-close
     option forwardfor
-    server lighthouse1 lighthouse:5052 maxconn 100000 check inter 2s
+    server prysm1 prysm:8080 maxconn 100000 check inter 2s
 EOF
 echo -e "${GREEN}HAProxy config written.${NC}"
 
@@ -224,9 +225,10 @@ if command -v ufw >/dev/null 2>&1; then
   sudo ufw allow 443/tcp
   sudo ufw allow 30303/tcp
   sudo ufw allow 30303/udp
-  sudo ufw allow 9000/tcp
-  sudo ufw allow 9000/udp
-  sudo ufw allow 5052/tcp
+  sudo ufw allow 4000/tcp
+  sudo ufw allow 4000/udp
+  sudo ufw allow 3500/tcp
+  sudo ufw allow 8080/tcp
   sudo ufw allow 8545/tcp
   sudo ufw allow 8551/tcp
   sudo ufw allow 9999/tcp
@@ -243,10 +245,10 @@ echo -e "         ETHEREUM SEPOLIA NODE STATUS"
 echo -e "========================================${NC}"
 echo -e "${BOLD}Local Access:${NC}"
 echo -e "· Erigon RPC:   ${GREEN}http://127.0.0.1/erigon/${NC}"
-echo -e "· Beacon RPC:   ${GREEN}http://127.0.0.1/lighthouse/${NC}"
+echo -e "· Beacon RPC:   ${GREEN}http://127.0.0.1/prysm/${NC}"
 echo -e "\n${BOLD}Remote Access:${NC}"
 echo -e "· Erigon RPC:   ${GREEN}http://${PUBLIC_IP}/erigon/${NC}"
-echo -e "· Beacon RPC:   ${GREEN}http://${PUBLIC_IP}/lighthouse/${NC}"
+echo -e "· Beacon RPC:   ${GREEN}http://${PUBLIC_IP}/prysm/${NC}"
 echo -e "· Dozzle:       ${GREEN}http://${PUBLIC_IP}:9999/${NC}"
 echo -e "${CYAN}========================================${NC}"
 
