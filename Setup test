@@ -47,8 +47,8 @@ fi
 
 echo -e "${CYAN}----------------------------------------${NC}"
 
-# ---- 0. Check Docker and Compose ----
-echo -e "${CYAN}Checking for Docker and Docker Compose...${NC}"
+# ---- 0. Check Prerequisites ----
+echo -e "${CYAN}Checking for prerequisites...${NC}"
 
 for cmd in docker curl sudo openssl; do
   command -v $cmd >/dev/null 2>&1 || fail "$cmd is not installed. Please install it and rerun."
@@ -66,37 +66,57 @@ else
   fail "Docker Compose is not installed. Please install it and rerun."
 fi
 
-echo -e "${GREEN}Docker and Compose are installed. Proceeding with Sepolia node setup...${NC}"
+echo -e "${GREEN}All prerequisites found.${NC}"
 
 # ---- 1. Create Directory Structure ----
 echo -e "${CYAN}Creating directory structure...${NC}"
-mkdir -p Ethereum/Execution Ethereum/Consensus
-echo -e "${GREEN}Directory structure ready.${NC}"
+mkdir -p Ethereum/{Execution,Consensus}
+cd Ethereum
 
-# ---- 2. Generate JWT Secret (always fresh) ----
-echo -e "${CYAN}Generating fresh JWT secret...${NC}"
-openssl rand -hex 32 | tr -d "\n" > Ethereum/jwt.hex || fail "Failed to create jwt.hex"
-chmod 644 Ethereum/jwt.hex
-echo -e "${GREEN}JWT secret created and permissions set.${NC}"
+# ---- 2. Generate Fresh JWT Secret ----
+echo -e "${CYAN}Generating JWT secret...${NC}"
+openssl rand -hex 32 | tr -d "\n" > jwt.hex || fail "Failed to create jwt.hex"
+chmod 644 jwt.hex
+echo -e "${GREEN}JWT secret created.${NC}"
 
-# ---- 3. Create Default Whitelist File ----
+# ---- 3. Create Whitelist File ----
 echo -e "${CYAN}Creating whitelist file...${NC}"
-if [ ! -f Ethereum/whitelist.lst ]; then
-  echo "127.0.0.1/32" > Ethereum/whitelist.lst
-  echo -e "${GREEN}Whitelist file created.${NC}"
-else
-  echo -e "${YELLOW}Whitelist file already exists, skipping.${NC}"
-fi
+echo "127.0.0.1/32" > whitelist.lst || fail "Failed to create whitelist.lst"
+echo -e "${GREEN}Whitelist file created.${NC}"
 
 # ---- 4. Write Docker Compose File ----
 echo -e "${CYAN}Writing Docker Compose file...${NC}"
-cat > Ethereum/docker-compose.yml <<EOF
+cat > docker-compose.yml <<EOF
 version: "3.8"
 services:
+  erigon:
+    image: erigontech/erigon:latest
+    container_name: erigon
+    restart: unless-stopped
+    command:
+      - --chain=sepolia
+      - --authrpc.jwtsecret=/jwt.hex
+      - --authrpc.addr=0.0.0.0
+      - --authrpc.port=8551
+      - --http
+      - --http.api=eth,erigon,web3,net,debug
+      - --prune.mode=full
+      - --maxpeers=100
+    volumes:
+      - ./Execution:/home/erigon/.local/share/erigon
+      - ./jwt.hex:/jwt.hex
+    ports:
+      - 8545:8545
+      - 8551:8551
+      - 30303:30303/tcp
+      - 30303:30303/udp
+
   lighthouse:
     image: sigp/lighthouse:latest
     container_name: lighthouse
     restart: unless-stopped
+    depends_on:
+      - erigon
     command:
       - lighthouse
       - beacon_node
@@ -114,31 +134,6 @@ services:
       - 9000:9000/tcp
       - 9000:9000/udp
       - 5052:5052
-
-  erigon:
-    image: erigontech/erigon:latest
-    container_name: erigon
-    restart: unless-stopped
-    depends_on:
-      - lighthouse
-    command:
-      - --chain=sepolia
-      - --externalcl
-      - --authrpc.jwtsecret=/jwt.hex
-      - --authrpc.addr=0.0.0.0
-      - --authrpc.port=8551
-      - --http
-      - --http.api=eth,erigon,web3,net,debug
-      - --prune.mode=full
-      - --maxpeers=100
-    volumes:
-      - ./Execution:/home/erigon/.local/share/erigon
-      - ./jwt.hex:/jwt.hex
-    ports:
-      - 8545:8545
-      - 8551:8551
-      - 30303:30303/tcp
-      - 30303:30303/udp
 
   haproxy:
     image: haproxy:2.8
@@ -167,7 +162,7 @@ echo -e "${GREEN}Docker Compose file written.${NC}"
 
 # ---- 5. Write HAProxy Config ----
 echo -e "${CYAN}Writing HAProxy config...${NC}"
-cat > Ethereum/haproxy.cfg <<EOF
+cat > haproxy.cfg <<EOF
 global
     maxconn 200000
     nbthread 16
@@ -212,19 +207,17 @@ EOF
 echo -e "${GREEN}HAProxy config written.${NC}"
 
 # ---- 6. Fix Permissions ----
-echo -e "${CYAN}Fixing permissions for Erigon and Lighthouse data directories...${NC}"
-sudo chown -R 1000:1000 Ethereum/Execution
-sudo chown -R 1000:1000 Ethereum/Consensus
+echo -e "${CYAN}Fixing permissions...${NC}"
+sudo chown -R 1000:1000 Execution Consensus
 echo -e "${GREEN}Permissions fixed.${NC}"
 
-# ---- 7. Start Docker Compose Stack ----
-echo -e "${CYAN}Starting Docker Compose stack...${NC}"
-cd Ethereum
-sudo $COMPOSE_CMD up -d
-echo -e "${GREEN}Docker Compose stack started.${NC}"
+# ---- 7. Start Services ----
+echo -e "${CYAN}Starting Docker stack...${NC}"
+$COMPOSE_CMD up -d
+echo -e "${GREEN}Docker stack started.${NC}"
 
-# ---- 8. Set Up UFW Firewall (Best Practice) ----
-echo -e "${CYAN}Configuring UFW firewall rules...${NC}"
+# ---- 8. Configure Firewall ----
+echo -e "${CYAN}Configuring firewall...${NC}"
 if command -v ufw >/dev/null 2>&1; then
   sudo ufw allow 22/tcp
   sudo ufw allow 80/tcp
@@ -238,75 +231,23 @@ if command -v ufw >/dev/null 2>&1; then
   sudo ufw allow 8551/tcp
   sudo ufw allow 9999/tcp
   sudo ufw --force enable
-  sudo ufw status verbose
-  echo -e "${GREEN}UFW firewall configured.${NC}"
+  echo -e "${GREEN}Firewall configured.${NC}"
 else
-  echo -e "${YELLOW}UFW not installed. Skipping firewall setup.${NC}"
+  echo -e "${YELLOW}UFW not found. Firewall setup skipped.${NC}"
 fi
 
-# ---- Get Server IPs ----
-LOCAL_IP="127.0.0.1"
-SERVER_IP=$(hostname -I | awk '{print $1}')
-PUBLIC_IP=$(curl -4 -s ifconfig.me || echo $SERVER_IP)
-REMOTE_IP=$PUBLIC_IP
-
-# ---- Final Output ----
+# ---- 9. Final Output ----
+PUBLIC_IP=$(curl -4 -s ifconfig.me)
 echo -e "${CYAN}========================================"
 echo -e "         ETHEREUM SEPOLIA NODE STATUS"
 echo -e "========================================${NC}"
-
-echo -e "${BOLD}Local (Aztec in same VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${LINK}http://127.0.0.1/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${LINK}http://127.0.0.1/lighthouse/${NC}"
-
-echo -e "\n${BOLD}Remote (Aztec in other VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}/lighthouse/${NC}"
-
-echo -e "\n${BOLD}Monitoring${NC}"
-echo -e "· Dozzle         : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}:9999/${NC}"
-
-echo -e "\n${BOLD}Whitelist file${NC}"
-echo -e "· ${YELLOW}Ethereum/whitelist.lst${NC}"
-
-echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${BOLD}Example L2/L3 usage:${NC}"
-echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${LINK}--l1-rpc-urls http://${REMOTE_IP}/erigon/"
-echo -e "--l1-consensus-host-urls http://${REMOTE_IP}/lighthouse/${NC}"
-echo -e "${CYAN}----------------------------------------${NC}"
-
-echo -e "${BOLD}To whitelist more IPs:${NC} edit ${YELLOW}Ethereum/whitelist.lst${NC} then:"
-echo -e "  sudo docker restart haproxy"
-
-echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${BOLD}Firewall:${NC} allows SSH/HTTP/HTTPS only"
+echo -e "${BOLD}Local Access:${NC}"
+echo -e "· Erigon RPC:   ${GREEN}http://127.0.0.1/erigon/${NC}"
+echo -e "· Beacon RPC:   ${GREEN}http://127.0.0.1/lighthouse/${NC}"
+echo -e "\n${BOLD}Remote Access:${NC}"
+echo -e "· Erigon RPC:   ${GREEN}http://${PUBLIC_IP}/erigon/${NC}"
+echo -e "· Beacon RPC:   ${GREEN}http://${PUBLIC_IP}/lighthouse/${NC}"
+echo -e "· Dozzle:       ${GREEN}http://${PUBLIC_IP}:9999/${NC}"
 echo -e "${CYAN}========================================${NC}"
 
-# ---- 9. Offer to Add Whitelist IP ----
-echo ""
-read -p "Add IP to whitelist for remote access? [Y/n]: " ADD_WL
-ADD_WL=${ADD_WL:-Y}
-
-if [[ "$ADD_WL" =~ ^[Yy]$ ]]; then
-  echo "ℹ️  Your remote IP appears to be: ${REMOTE_IP}"
-  read -p "Enter IP/CIDR to whitelist (default ${REMOTE_IP}/32): " WL_IP
-  WL_IP=${WL_IP:-${REMOTE_IP}/32}
-
-  if [[ "$WL_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
-    if grep -qxF "$WL_IP" whitelist.lst; then
-      echo -e "${YELLOW}IP $WL_IP is already whitelisted.${NC}"
-    else
-      echo "$WL_IP" >> whitelist.lst
-      echo -e "${GREEN}Added $WL_IP to whitelist.${NC}"
-      echo "Restarting HAProxy container to apply changes..."
-      sudo docker restart haproxy
-      echo -e "${GREEN}HAProxy restarted.${NC}"
-    fi
-  else
-    echo -e "${RED}Invalid IP format. Please edit Ethereum/whitelist.lst manually.${NC}"
-  fi
-fi
-
-echo ""
-echo -e "${GREEN}Setup complete. Enjoy your Sepolia node!${NC}"
+echo -e "\n${GREEN}Setup complete. Node is syncing!${NC}"
