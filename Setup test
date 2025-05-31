@@ -8,7 +8,8 @@ GREEN='\033[32m'
 RED='\033[31m'
 YELLOW='\033[33m'
 CYAN='\033[36m'
-GRAY='\033[90m'
+BLUE='\033[34m'
+LINK='\033[36m' # Cyan for all links
 
 # ---- Helper for error exit ----
 fail() { echo -e "${RED}ERROR:${NC} $1"; exit 1; }
@@ -111,14 +112,20 @@ services:
       - --authrpc.port=8551
       - --http
       - --http.api=eth,erigon,web3,net,debug
-      - --prune=htc
+      - --prune.mode=full
       - --blobs=true
       - --blob-sidecars=true
+      - --metrics
+      - --metrics.addr=0.0.0.0
+      - --metrics.port=6060
+      - --rpc.returndata.limit=100000000
+      - --rpc.gascap=100000000
     ports:
       - 8545:8545
       - 8551:8551
       - 30303:30303/tcp
       - 30303:30303/udp
+      - 6060:6060
 
   lighthouse:
     image: sigp/lighthouse:latest
@@ -141,10 +148,16 @@ services:
       - --http-port=5052
       - --enable-blobs
       - --enable-blob-sidecars
+      - --metrics
+      - --metrics-address=0.0.0.0
+      - --metrics-port=5054
+      - --max-simultaneous-rpc-requests=2048
+      - --target-peers=200
     ports:
       - 9000:9000/tcp
       - 9000:9000/udp
       - 5052:5052
+      - 5054:5054
 
   haproxy:
     image: haproxy:2.8
@@ -175,34 +188,48 @@ echo -e "${GREEN}Docker Compose file written.${NC}"
 echo -e "${CYAN}Writing HAProxy config...${NC}"
 cat > haproxy.cfg <<EOF
 global
-    maxconn 100000
-    nbthread 8
-    cpu-map 1-8 0-7
+    maxconn 200000
+    nbthread 16
+    cpu-map 1-16 0-15
+    tune.bufsize 32768
+    tune.ssl.default-dh-param 2048
+    tune.ssl.cachesize 1000000
+    tune.ssl.lifetime 600
+    tune.maxrewrite 8192
 
 defaults
-    timeout connect 5s
-    timeout client 60s
-    timeout server 60s
+    timeout connect 2s
+    timeout client 30s
+    timeout server 30s
+    option http-server-close
+    option forwardfor
+    maxconn 200000
 
 frontend http-in
     bind *:80
     bind *:443
     mode http
+    option httplog
     acl valid_ip src -f /etc/haproxy/whitelist.lst
     http-request deny if !valid_ip
 
     use_backend erigon_backend if { path_beg /erigon/ }
     use_backend lighthouse_backend if { path_beg /lighthouse/ }
+    default_backend erigon_backend
 
 backend erigon_backend
     mode http
-    balance roundrobin
-    server erigon1 erigon:8545 maxconn 20000 check inter 3s
+    balance leastconn
+    option http-server-close
+    option forwardfor
+    server erigon1 erigon:8545 maxconn 100000 check inter 2s
 
 backend lighthouse_backend
     mode http
     balance leastconn
-    server lighthouse1 lighthouse:5052 maxconn 10000 check inter 3s
+    option http-server-close
+    option forwardfor
+    server lighthouse1 lighthouse:5052 maxconn 100000 check inter 2s
 EOF
 echo -e "${GREEN}HAProxy config written.${NC}"
 
@@ -231,8 +258,10 @@ if command -v ufw >/dev/null 2>&1; then
   sudo ufw allow 9000/tcp
   sudo ufw allow 9000/udp
   sudo ufw allow 5052/tcp
+  sudo ufw allow 5054/tcp
   sudo ufw allow 8545/tcp
   sudo ufw allow 8551/tcp
+  sudo ufw allow 6060/tcp
   sudo ufw --force enable
   sudo ufw status verbose
   echo -e "${GREEN}UFW firewall configured.${NC}"
@@ -254,15 +283,15 @@ echo -e "         ETHEREUM SEPOLIA NODE STATUS"
 echo -e "========================================${NC}"
 
 echo -e "${BOLD}Local (Aztec in same VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${YELLOW}http://127.0.0.1/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${YELLOW}http://127.0.0.1/lighthouse/${NC}"
+echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${LINK}http://127.0.0.1/erigon/${NC}"
+echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${LINK}http://127.0.0.1/lighthouse/${NC}"
 
 echo -e "\n${BOLD}Remote (Aztec in other VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${YELLOW}http://${REMOTE_IP}/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${YELLOW}http://${REMOTE_IP}/lighthouse/${NC}"
+echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}/erigon/${NC}"
+echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}/lighthouse/${NC}"
 
 echo -e "\n${BOLD}Monitoring${NC}"
-echo -e "· Dozzle         : ${GREEN}✔${NC} ${YELLOW}http://${REMOTE_IP}:9999/${NC}"
+echo -e "· Dozzle         : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}:9999/${NC}"
 
 echo -e "\n${BOLD}Whitelist file${NC}"
 echo -e "· ${YELLOW}Ethereum/whitelist.lst${NC}"
@@ -270,7 +299,7 @@ echo -e "· ${YELLOW}Ethereum/whitelist.lst${NC}"
 echo -e "${CYAN}----------------------------------------${NC}"
 echo -e "${BOLD}Example L2/L3 usage:${NC}"
 echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${GRAY}--l1-rpc-urls http://${REMOTE_IP}/erigon/"
+echo -e "${LINK}--l1-rpc-urls http://${REMOTE_IP}/erigon/"
 echo -e "--l1-consensus-host-urls http://${REMOTE_IP}/lighthouse/${NC}"
 echo -e "${CYAN}----------------------------------------${NC}"
 
