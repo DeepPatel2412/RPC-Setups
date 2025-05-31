@@ -7,8 +7,8 @@ BOLD='\033[1m'
 GREEN='\033[32m'
 RED='\033[31m'
 YELLOW='\033[33m'
-CYAN='\033[36m]'
-GRAY='\033[90m'
+CYAN='\033[36m'
+LINK='\033[36m'
 
 fail() { echo -e "${RED}ERROR:${NC} $1"; exit 1; }
 
@@ -96,10 +96,34 @@ echo -e "${CYAN}Writing Docker Compose file...${NC}"
 cat > Ethereum/docker-compose.yml <<EOF
 version: "3.8"
 services:
+  lighthouse:
+    image: sigp/lighthouse:latest
+    container_name: lighthouse
+    restart: unless-stopped
+    command:
+      - lighthouse
+      - beacon_node
+      - --network=sepolia
+      - --execution-endpoint=http://erigon:8551
+      - --execution-jwt=/jwt.hex
+      - --checkpoint-sync-url=https://sepolia.checkpoint.sigp.io
+      - --http
+      - --http-port=5052
+      - --target-peers=100
+    volumes:
+      - ./Consensus:/data
+      - ./jwt.hex:/jwt.hex
+    ports:
+      - 9000:9000/tcp
+      - 9000:9000/udp
+      - 5052:5052
+
   erigon:
     image: erigontech/erigon:latest
     container_name: erigon
     restart: unless-stopped
+    depends_on:
+      - lighthouse
     command:
       - --chain=sepolia
       - --externalcl
@@ -118,30 +142,6 @@ services:
       - 8551:8551
       - 30303:30303/tcp
       - 30303:30303/udp
-
-  lighthouse:
-    image: sigp/lighthouse:latest
-    container_name: lighthouse
-    restart: unless-stopped
-    depends_on:
-      - erigon
-    command:
-      - lighthouse
-      - beacon_node
-      - --network=sepolia
-      - --execution-endpoint=http://erigon:8551
-      - --execution-jwt=/jwt.hex
-      - --checkpoint-sync-url=https://sepolia.checkpoint.sigp.io
-      - --http
-      - --http-port=5052
-      - --target-peers=100
-    volumes:
-      - ./Consensus:/data
-      - ./jwt.hex:/jwt.hex
-    ports:
-      - 9000:9000/tcp
-      - 9000:9000/udp
-      - 5052:5052
 
   haproxy:
     image: haproxy:2.8
@@ -259,15 +259,15 @@ echo -e "         ETHEREUM SEPOLIA NODE STATUS"
 echo -e "========================================${NC}"
 
 echo -e "${BOLD}Local (Aztec in same VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${CYAN}http://127.0.0.1/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${CYAN}http://127.0.0.1/lighthouse/${NC}"
+echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${LINK}http://127.0.0.1/erigon/${NC}"
+echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${LINK}http://127.0.0.1/lighthouse/${NC}"
 
 echo -e "\n${BOLD}Remote (Aztec in other VPS)${NC}"
-echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${CYAN}http://${REMOTE_IP}/erigon/${NC}"
-echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${CYAN}http://${REMOTE_IP}/lighthouse/${NC}"
+echo -e "· Sepolia RPC    : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}/erigon/${NC}"
+echo -e "· Beacon RPC     : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}/lighthouse/${NC}"
 
 echo -e "\n${BOLD}Monitoring${NC}"
-echo -e "· Dozzle         : ${GREEN}✔${NC} ${CYAN}http://${REMOTE_IP}:9999/${NC}"
+echo -e "· Dozzle         : ${GREEN}✔${NC} ${LINK}http://${REMOTE_IP}:9999/${NC}"
 
 echo -e "\n${BOLD}Whitelist file${NC}"
 echo -e "· ${YELLOW}Ethereum/whitelist.lst${NC}"
@@ -275,7 +275,7 @@ echo -e "· ${YELLOW}Ethereum/whitelist.lst${NC}"
 echo -e "${CYAN}----------------------------------------${NC}"
 echo -e "${BOLD}Example L2/L3 usage:${NC}"
 echo -e "${CYAN}----------------------------------------${NC}"
-echo -e "${CYAN}--l1-rpc-urls http://${REMOTE_IP}/erigon/"
+echo -e "${LINK}--l1-rpc-urls http://${REMOTE_IP}/erigon/"
 echo -e "--l1-consensus-host-urls http://${REMOTE_IP}/lighthouse/${NC}"
 echo -e "${CYAN}----------------------------------------${NC}"
 
