@@ -208,10 +208,10 @@ echo -en "Tools : ${TOOL_STATUS}"
 unset SEPOLIA_RPC
 unset BEACON_RPC
 echo -e "\n● RPC Endpoints"
-read -rp "Enter Sepolia RPC URL: " SEPOLIA_RPC
+read -rp "Enter Sepolia RPC URL: " SEPOLIA_RPC < /dev/tty
 echo -ne "\033[1A\033[K"
 echo -e "Sepolia RPC Set ${GREEN}✓${RESET}"
-read -rp "Enter Beacon RPC URL: " BEACON_RPC
+read -rp "Enter Beacon RPC URL: " BEACON_RPC < /dev/tty
 echo -ne "\033[1A\033[K"
 echo -e "Beacon RPC Set ${GREEN}✓${RESET}"
 
